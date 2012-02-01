@@ -48,6 +48,12 @@
 		  )
 		args)))
 
+(defun typecast-name (derived base)
+  (intern (sconc "CAST-"
+		 (lisp-type-name derived)
+		 "-TO-"
+		 (lisp-type-name base))))
+
 (defun args-to-alien-args (args)
   (mapcar (lambda (arg)
 	    (destructuring-bind (type (lisp-name c-name) &optional default) arg
@@ -55,17 +61,83 @@
 	      `(,lisp-name ,(type-to-alien-type type))))
 	  args))
 
+(defun arg-needs-downcast (arg)
+  (let ((type (first arg)))
+    (when (typep type 'cpp-ptr-type)
+      (let ((type (cpp-ptr-child-type type)))
+	(when (typep type 'cpp-class)
+	  (let* ((children (cpp-class-child-classes type)) 
+		 (length (length children)))
+	    (< 0 length)))))))
+
+(defun make-atomic (type)
+  (if (atomic-type-p type)
+      type
+      ;; else
+      (make-instance 'cpp-ptr-type
+		     :type type)))
+
 (defun output-lisp-for-func (func lisp-result)
-  (vector-push-extend `(sb-alien:define-alien-routine (,(c-transliterated-name func) ,(intern (lisp-type-name func)))
-			   ,(type-to-alien-type (cpp-func-return-type func))
-			 ,@(args-to-alien-args (cpp-func-args func)))
-		      lisp-result))
+  (let* ((func-sym (intern (lisp-type-name func)))
+	 (sym (get func-sym 'wrapped-name (gensym)))
+	 (args (mapcar (lambda (arg)
+			 (destructuring-bind (type name &optional default) arg
+			   (declare (ignore default))
+			   `(,(make-atomic type) ,name)))
+		       (cpp-func-args func)))
+	 (return-type (type-to-alien-type (make-atomic (cpp-func-return-type func)))))
+    (setf (get func-sym 'wrapped-name) sym)
+    (if (some #'arg-needs-downcast args)
+	(progn
+	  (vector-push-extend `(declaim (inline ,sym))
+			      lisp-result)
+	  (vector-push-extend `(sb-alien:define-alien-routine (,(c-transliterated-name func) ,sym)
+				   ,return-type
+				 ,@(args-to-alien-args args))
+			      lisp-result)
+	  (vector-push-extend `(defun ,func-sym (,@(mapcar (lambda (arg)
+							     (first (second arg)))
+						    args))
+				 (,sym ,@(mapcar (lambda (arg)
+						   (let ((type (first arg))
+							 (name (first (second arg))))
+						     (if (arg-needs-downcast arg)
+							 (let ((base (cpp-ptr-child-type type))
+							       (child-classes (find-all-child-classes (cpp-ptr-child-type type))))
+							   `(typecase ,name
+							      ((alien (* (struct ,(intern (lisp-type-name base)))))
+							       ,name)
+							      ,@(with-collector (collect)
+								  (dovector (child child-classes)
+								    (collect `((alien (* ,(intern (lisp-type-name child))))
+									       (,(typecast-name child base) ,name)))))
+							      (t
+							       (error ,(sconc "invalid type for " 
+									      (symbol-name* func-sym)
+									      " ~w, ~a")
+								      ,name (type-of ,name)))))
+							 ;; else
+							 name)))
+						 args)))
+			      lisp-result))
+	;; else simple case
+	(vector-push-extend `(sb-alien:define-alien-routine (,(c-transliterated-name func) ,func-sym)
+				 ,return-type
+			       ,@(args-to-alien-args args))
+			    lisp-result))
+    (vector-push-extend `(export ',func-sym)
+			lisp-result)))
 
 (defun output-lisp-for-ctor (ctor lisp-result)
-  (vector-push-extend `(sb-alien:define-alien-routine (,(c-transliterated-name ctor) ,(intern (lisp-type-name ctor)))
-			   (* ,(type-to-alien-type (parent-scope ctor)))
-			 ,@(args-to-alien-args (cpp-ctor-args ctor)))
-		      lisp-result))
+  (let ((class (parent-scope ctor)))
+    (output-lisp-for-func (make-instance 'cpp-func
+					 :args (cpp-ctor-args ctor)
+					 :return-type (make-instance 'cpp-ptr-type
+								     :type class)
+					 :parent-scope class
+					 :c-name (cpp-named-c-name ctor)
+					 :name (cpp-named-name ctor))
+			  lisp-result)))
 
 (defun output-invocation (return-type name-stem args c-stream)
   (format c-stream "~a" #\Tab)
@@ -166,15 +238,11 @@
 				 :type derived))
 	 (dest-type (make-instance 'cpp-ptr-type
 				   :type base))
-	 (func-name (sconc "CAST-"
-			   (lisp-type-name derived)
-			   "-TO-"
-			   (lisp-type-name base)))
-	 (sym (intern func-name))
+	 (func-name (typecast-name derived base))
 	 (args `((,src-type (self "self"))))
-	 (c-name (funcall func-symbol-func sym))
+	 (c-name (funcall func-symbol-func func-name))
 	 (func (make-instance 'cpp-func
-			      :name sym
+			      :name func-name
 			      :c-name c-name
 			      :args args
 			      :return-type dest-type
@@ -186,7 +254,7 @@
     (format c-stream
 	    "~areturn self;~%}~%~%"
 	    #\Tab)
-    (vector-push-extend `(sb-alien:define-alien-routine (,c-name ,sym)
+    (vector-push-extend `(sb-alien:define-alien-routine (,c-name ,func-name)
 			      ,(type-to-alien-type dest-type)
 			   (self ,(type-to-alien-type src-type)))
 			lisp-result)))

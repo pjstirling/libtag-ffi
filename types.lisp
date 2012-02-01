@@ -88,13 +88,27 @@
       (and (typep type 'cpp-const-type)
 	   (atomic-type-p (cpp-const-child-type type)))))
 
+(defun type-is-char (type)
+  (or (and (typep type 'cpp-builtin-type)
+	   (eq (cpp-named-name type) 'char))
+      (and (typep type 'cpp-const-type)
+	   (type-is-char (cpp-const-child-type type)))))
+
 (defun type-to-alien-type (type)
-  (etypecase type
+  (typecase type
+    (cpp-const-type
+     (type-to-alien-type (cpp-const-child-type type)))
     (cpp-builtin-type
      (cpp-named-name type))
     (cpp-ptr-type
-     `(* ,(type-to-alien-type (cpp-ptr-child-type type))))
+     (let ((child (cpp-ptr-child-type type)))
+       (if (type-is-char child)
+	   `(c-string :external-format :utf-8)
+	   ;; else
+	   `(* ,(type-to-alien-type (cpp-ptr-child-type type))))))
     (cpp-class
-     (intern (lisp-type-name type)))
+     `(struct ,(intern (lisp-type-name type))))
     (cpp-enum-type
-     'int)))
+     'int)
+    (t
+     (error "invalid type for type-to-alien-type ~w, ~a" type (type-of type)))))

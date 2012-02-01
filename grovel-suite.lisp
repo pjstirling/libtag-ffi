@@ -50,7 +50,11 @@
     (class audio-properties ()
 	   (enum read-style))
     (class file ())
-    (class string ())
+    (class string ()
+	   (ctor ((* char) s))
+	   (func to-c-string
+		 (* (const char))
+		 (bool unicode 1)))
     (class tag ()
 	   (func title
 		 string)
@@ -151,3 +155,15 @@
 		   (* (ogg xiph-comment))
 		   (bool create))))))
 
+
+(defun test-fun ()
+  (let* ((f (tag-lib-flac-file-create-with-char-ptr-and-char-and-tag-lib-audio-properties-read-style "/home/peter/Music/Wiley/Now\ 70\ CD2/14\ -\ Wearing\ My\ Rolex.flac" 0 0))
+	 (tag (tag-lib-flac-file-xiph-comment f 0))
+	 (str (tag-lib-tag-artist tag)))
+    (format t "artist: ~a ~%" (tag-lib-string-to-c-string str 1))
+    (tag-lib-flac-file-delete f)))
+
+(defun test-fun2 ()
+  (let ((str (tag-lib-string-create-with-char-ptr "test")))
+    (format t "string content: ~a~%" (tag-lib-string-to-c-string str 1))
+    (tag-lib-string-delete str)))

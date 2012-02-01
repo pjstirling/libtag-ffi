@@ -24,7 +24,7 @@
     result))
 
 (defun lisp-type-name (type)
-  (etypecase type
+  (typecase type
     (cpp-builtin-type
      (symbol-name (cpp-named-name type)))
     ((or cpp-class cpp-ctor cpp-func cpp-enum-type cpp-namespace cpp-overload)
@@ -34,10 +34,12 @@
 	    "-CONST"))
     (cpp-ptr-type 
      (sconc (lisp-type-name (cpp-ptr-child-type type))
-	    "-PTR"))))
+	    "-PTR"))
+    (t
+     (error "invalid type for lisp-type-name ~w, ~a" type (type-of type)))))
 
 (defun c-type-name (type)
-  (etypecase type
+  (typecase type
     (cpp-ptr-type 
      (sconc (c-type-name (cpp-ptr-child-type type))
 	    "*"))
@@ -47,7 +49,9 @@
      (join "::" (c-scope-chain type)))
     (cpp-const-type
      (sconc (c-type-name (cpp-const-child-type type))
-	    " const"))))
+	    " const"))
+    (t
+     (error "invalid type for c-type-name ~w, ~a" type (type-of type)))))
 
 (defmacro define-print-objects (&rest args)
   `(progn

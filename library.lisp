@@ -21,7 +21,7 @@
       (error "~a ~w returned error-output ~w" name args error))))
 
 ;; g++ -fPIC -c -Wall fixed-id3.cc
-;; ld -fPIC -shared -E -o lisp-tag-lib.so.1 -ltag  lisp-tag-lib.o
+;; g++ -fPIC -shared -E -Wl,-soname=lisp-tag-lib.so -o lisp-tag-lib.so lisp-tag-lib.o -ltag
 (defun compile-shim (location libraries)
   (let* ((cc-file (sb-ext:native-namestring location))
 	 (o-path (make-pathname :type "o" :defaults location))
@@ -30,11 +30,11 @@
 	 (so-file (sb-ext:native-namestring so-path)))
     (run-process "/usr/bin/g++"
 		 `("-fPIC" "-c" "-Wall" ,cc-file))
-    (run-process "/usr/bin/ld"
-		 `("-fPIC" "-shared" "-E"
+    (run-process "/usr/bin/g++"
+		 `("-fPIC" "-shared" ,(sconc "-Wl,-soname=" so-file)
 		   "-o" ,so-file
+		   ,o-file
 		   ,@(mapcar (lambda (lib)
 			       (sconc "-l" lib))
-			     libraries)
-		   ,o-file))
+			     libraries)))
     so-file))
