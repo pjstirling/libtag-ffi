@@ -29,7 +29,7 @@
 	 (so-path (make-pathname :type "so" :defaults location))
 	 (so-file (sb-ext:native-namestring so-path)))
     (run-process "/usr/bin/g++"
-		 `("-fPIC" "-c" "-Wall" ,cc-file))
+		 `("-fPIC" "-c" "-Wall" "-o" ,o-file ,cc-file))
     (run-process "/usr/bin/g++"
 		 `("-fPIC" "-shared" ,(sconc "-Wl,-soname=" so-file)
 		   "-o" ,so-file
