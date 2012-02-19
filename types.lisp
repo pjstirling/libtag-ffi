@@ -64,9 +64,15 @@
   ((funcs :initform []
 	  :accessor cpp-overload-funcs)))
 
-(defclass cpp-ptr-type ()
-  ((child :initarg :type
-	  :reader cpp-ptr-child-type)))
+(defmacro define-cpp-wrapper-types (&rest names)
+  `(progn
+     ,@(mapcar (lambda (name)
+		 `(defclass ,(symb "cpp-" name "-type") ()
+		    ((wrapped-type :initarg :type
+				   :accessor cpp-wrapped-type))))
+	       names)))
+
+(define-cpp-wrapper-types ptr reference const)
 
 (defclass cpp-builtin-type ()
   ((name :initarg :name
@@ -77,38 +83,57 @@
 (defclass cpp-enum-type (cpp-named)
   ())
 
-(defclass cpp-const-type ()
-  ((child :initarg :type
-	  :reader cpp-const-child-type)))
-
 (defun atomic-type-p (type)
   (or (typep type 'cpp-builtin-type)
       (typep type 'cpp-ptr-type)
       (typep type 'cpp-enum-type)
       (and (typep type 'cpp-const-type)
-	   (atomic-type-p (cpp-const-child-type type)))))
+	   (atomic-type-p (cpp-wrapped-type type)))))
+
+(defun make-atomic (type)
+  (cond
+    ((atomic-type-p type)
+     type)
+    ((typep type 'cpp-reference-type)
+     (make-instance 'cpp-ptr-type
+		    :type (cpp-wrapped-type type)))
+    ((typep type 'cpp-class)
+     (make-instance 'cpp-ptr-type
+		    :type type))
+    (t
+     (error "unhandled case in make-atomic ~a ~w" type (type-of type)))))
+
+(defun builtin-type-p (object type)
+  (and (typep type 'cpp-builtin-type)
+       (eq (cpp-named-name object) type)))
 
 (defun type-is-char (type)
-  (or (and (typep type 'cpp-builtin-type)
-	   (eq (cpp-named-name type) 'char))
+  (or (builtin-type-p type 'char)
       (and (typep type 'cpp-const-type)
-	   (type-is-char (cpp-const-child-type type)))))
+	   (builtin-type-p (cpp-wrapped-type type) 'char))))
 
 (defun type-to-alien-type (type)
   (typecase type
     (cpp-const-type
-     (type-to-alien-type (cpp-const-child-type type)))
+     (type-to-alien-type (cpp-wrapped-type type)))
     (cpp-builtin-type
-     (cpp-named-name type))
+     (let ((name (cpp-named-name type)))
+       (if (eq name 'bool)
+	   '(sb-alien:boolean 8)
+	   ;; else
+	   name)))
     (cpp-ptr-type
-     (let ((child (cpp-ptr-child-type type)))
+     (let ((child (cpp-wrapped-type type)))
        (if (type-is-char child)
 	   `(c-string :external-format :utf-8)
 	   ;; else
-	   `(* ,(type-to-alien-type (cpp-ptr-child-type type))))))
+	   `(* ,(type-to-alien-type (cpp-wrapped-type type))))))
     (cpp-class
      `(struct ,(intern (lisp-type-name type))))
     (cpp-enum-type
      'int)
+    (cpp-reference-type
+     (make-instance 'cpp-ptr-type
+		    :type (type-to-alien-type (cpp-wrapped-type type))))
     (t
      (error "invalid type for type-to-alien-type ~w, ~a" type (type-of type)))))

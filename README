@@ -1,0 +1,91 @@
+A library with a Domain Specific Language (DSL) for generating both C
+and lisp wrappers for C++ libraries.
+
+C++ supports features like overloading and namespaces which can not be
+directly expressed in C-oriented linking, because C-linkers only
+support one function per name. To get around this problem C++
+compilers use name-mangling so that e.g. an overloaded function
+includes its fully-qualified argument types as part of the
+name. Name-mangling isn't consistent between platforms, or different
+compilers on the same platform, or even different versions of the same
+compiler, so calling C++ functions from any other language requires
+either: 
+	(brittle) find the documentation for your compiler tool-chain
+	on your specific platform, and calculate the mangled name for
+	each function and embed that in your call to dlsym()
+OR
+	(annoying) devise a name-mangling scheme, write C wrappers
+	using those names, compile those wrappers into a new shared
+	library, linked against your target library, and then you
+	dlopen() the wrapper library in order to access your mangled
+	names in dlsym().
+
+Even for relatively small libraries, importing all of the functions
+for the classes can take tens or even hundreds of names, and using
+either method is a lot of work. 
+
+On top of this, you must also account for the differences between C++
+and your chosen language before you can invoke the named
+function. Most dynamic languages require some indication of the types
+of arguments and return values of each function. 
+
+This library takes the second method of handling the name-mangling
+issue, it generates the wrappers from a lisp-y declaration of the
+functions 
+
+GROVEL-SUITE is the main entry point for this library, it takes
+several options and then its body contains the forms representing the
+C++ namespaces, classes, enums, methods, constructors, and functions. 
+
+LIBRARY-PATHNAME should indicate where the compiled shim-library
+should be compiled
+
+LINK-LIBRARIES should be a list of the library names of the C++
+library that you want to get functions from, and any other libraries
+required for support 
+
+HEADERS is for listing the headers required for the C++ compiler to
+access the library
+
+CLASS-SYMBOL-FUNC VAR-SYMBOL-FUNC NAMESPACE-SYMBOL-FUNC FUNC-SYMBOL-FUNC
+These are functions designators of one argument that will be used to
+map lisp SYMBOLs to the C++ identifiers when writing the shim-library 
+
+RENAME-OVERLOAD-FUNC is a function designator for a function used in
+name-mangling for overloaded functions, and constructors, but only as
+necessary.
+
+BODY can consist of several forms:
+
+(NAMESPACE name &REST forms)
+(CLASS name (&REST parents) &BODY forms)
+(FUNC name result-type &REST arguments)
+argument: (type name)
+(CTOR &REST arguments)
+(ENUM name)
+(TYPEDEF name type)
+
+NAMESPACEs and CLASSes can be recursively defined, as in C++
+
+Types can either be a single SYMBOL, indicating a type from SB-ALIEN,
+or an ENUM or CLASS that appear earlier in the GROVEL-SUITE
+OR
+A LIST of (* type) indicating a pointer to the inner type
+OR 
+A LIST of (& type) indicating a reference type
+OR
+A LIST of (CONST type) indicating a const type
+OR
+A LIST of SYMBOLs that represent a scoped name e.g.:
+
+(grovel-suite <args>
+  (namespace a
+   (class b ()))
+  (namespace c
+   (class b ()
+     (func foo
+       (a b)))))
+
+function c::b::foo() takes no arguments and returns an object of type
+class a::b
+

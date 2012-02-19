@@ -26,13 +26,8 @@
 (defun definition-arg-string (args)
   (join ", "
 	(mapcar (lambda (arg)
-		  (let* ((type (first arg))
-			 (type (if (atomic-type-p type)
-				   type
-				   ;; else
-				   (make-instance 'cpp-ptr-type
-						  :type type))))
-		    (sconc (c-type-name type)
+		  (let ((type (first arg)))
+		    (sconc (c-type-name (make-atomic type))
 			   " "
 			   (second (second arg)))))
 		args)))
@@ -58,24 +53,17 @@
   (mapcar (lambda (arg)
 	    (destructuring-bind (type (lisp-name c-name) &optional default) arg
 	      (declare (ignore c-name default))
-	      `(,lisp-name ,(type-to-alien-type type))))
+	      `(,lisp-name ,(type-to-alien-type (make-atomic type)))))
 	  args))
 
 (defun arg-needs-downcast (arg)
   (let ((type (first arg)))
     (when (typep type 'cpp-ptr-type)
-      (let ((type (cpp-ptr-child-type type)))
+      (let ((type (cpp-wrapped-type type)))
 	(when (typep type 'cpp-class)
 	  (let* ((children (cpp-class-child-classes type)) 
 		 (length (length children)))
 	    (< 0 length)))))))
-
-(defun make-atomic (type)
-  (if (atomic-type-p type)
-      type
-      ;; else
-      (make-instance 'cpp-ptr-type
-		     :type type)))
 
 (defun output-lisp-for-func (func lisp-result)
   (let* ((func-sym (intern (lisp-type-name func)))
@@ -102,15 +90,16 @@
 						   (let ((type (first arg))
 							 (name (first (second arg))))
 						     (if (arg-needs-downcast arg)
-							 (let ((base (cpp-ptr-child-type type))
-							       (child-classes (find-all-child-classes (cpp-ptr-child-type type))))
+							 (let* ((base (cpp-wrapped-type type))
+								(child-classes (find-all-child-classes base)))
 							   `(typecase ,name
 							      ((alien (* (struct ,(intern (lisp-type-name base)))))
 							       ,name)
-							      ,@(with-collector (collect)
-								  (dovector (child child-classes)
-								    (collect `((alien (* ,(intern (lisp-type-name child))))
-									       (,(typecast-name child base) ,name)))))
+							      ,@(map 'list 
+								     (lambda (child)
+								       `((alien (* ,(intern (lisp-type-name child))))
+									 (,(typecast-name child base) ,name)))
+								     child-classes)
 							      (t
 							       (error ,(sconc "invalid type for " 
 									      (symbol-name* func-sym)
@@ -143,18 +132,21 @@
   (format c-stream "~a" #\Tab)
   (let* ((void-return (and (typep return-type 'cpp-builtin-type)
 			   (eq 'void (cpp-named-name return-type))))
-	 (atomic-return (atomic-type-p return-type)))
+	 (reference-return (typep return-type 'cpp-reference-type))
+	 (object-return (typep return-type 'cpp-class)))
     (unless void-return
       (format c-stream "return "))
-    (unless atomic-return
+    (when object-return
       (format c-stream
 	      "new ~a("
 	      (c-type-name return-type)))
+    (when reference-return
+      (format c-stream "&"))
     (format c-stream
 	    "~a(~a)"
 	    name-stem
 	    (invocation-arg-string args))
-    (unless atomic-return
+    (when object-return
       (format c-stream ")"))
     (format c-stream
 	    ";~%")))
@@ -162,9 +154,7 @@
 (defun output-definition-header (return-type named args c-stream)
   (format c-stream
 	  "~a"
-	  (c-type-name return-type))
-  (unless (atomic-type-p return-type)
-    (format c-stream "*"))
+	  (c-type-name (make-atomic return-type)))
   (format c-stream
 	  " ~a(~a) {~%"
 	  (c-transliterated-name named)
@@ -285,6 +275,35 @@
   (output-ctors class c-stream lisp-result)
   (output-overloads-for-class class c-stream lisp-result))
 
+(defun output-function (function cc-name c-stream lisp-result)
+  (let ((return-type (cpp-func-return-type function))
+	(args (cpp-func-args function)))
+    (output-definition-header return-type
+			      function
+			      args
+			      c-stream)
+    (output-invocation return-type
+		       cc-name
+		       args
+		       c-stream)
+    (format c-stream "}~%~%")
+    (output-lisp-for-func function lisp-result)))
+
+(defun output-functions (ns c-stream lisp-result)
+  (dohash (name func) (scope-functions ns)
+    (declare (ignore name))
+    (output-function func (c-type-name func) c-stream lisp-result)))
+
+(defun output-overloads-for-namespace (ns c-stream lisp-result)
+  (dohash (name overload) (scope-overloads ns)
+    (declare (ignore name))
+    (dovector (func (cpp-overload-funcs overload))
+      (output-function func (c-type-name overload) c-stream lisp-result))))
+
+(defun output-code-for-namespace (ns c-stream lisp-result)
+  (output-functions ns c-stream lisp-result)
+  (output-overloads-for-namespace ns c-stream lisp-result))
+
 (defun output-code-for-scope (scope 
 			      c-stream
 			      lisp-result
@@ -292,6 +311,8 @@
 			      rename-overload-func)
   (when (typep scope 'cpp-class)
     (output-code-for-class scope func-symbol-func c-stream lisp-result))
+  (when (typep scope 'cpp-namespace)
+    (output-code-for-namespace scope c-stream lisp-result))
   (when (typep scope 'scope)
     (dolist (inner (hash-table-values (scope-inner-scopes scope)))
       (output-code-for-scope inner

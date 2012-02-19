@@ -30,26 +30,32 @@
     ((or cpp-class cpp-ctor cpp-func cpp-enum-type cpp-namespace cpp-overload)
      (join "-" (lisp-scope-chain type)))
     (cpp-const-type
-     (sconc (lisp-type-name (cpp-const-child-type type))
+     (sconc (lisp-type-name (cpp-wrapped-type type))
 	    "-CONST"))
     (cpp-ptr-type 
-     (sconc (lisp-type-name (cpp-ptr-child-type type))
+     (sconc (lisp-type-name (cpp-wrapped-type type))
 	    "-PTR"))
+    (cpp-reference-type
+     (sconc (lisp-type-name (cpp-wrapped-type type))
+	    "-REF"))
     (t
      (error "invalid type for lisp-type-name ~w, ~a" type (type-of type)))))
 
 (defun c-type-name (type)
   (typecase type
     (cpp-ptr-type 
-     (sconc (c-type-name (cpp-ptr-child-type type))
+     (sconc (c-type-name (cpp-wrapped-type type))
 	    "*"))
     (cpp-builtin-type
      (cpp-named-c-name type))
     ((or cpp-class cpp-ctor cpp-func cpp-enum-type cpp-namespace cpp-overload)
      (join "::" (c-scope-chain type)))
     (cpp-const-type
-     (sconc (c-type-name (cpp-const-child-type type))
+     (sconc (c-type-name (cpp-wrapped-type type))
 	    " const"))
+    (cpp-reference-type
+     (sconc (c-type-name (cpp-wrapped-type type))
+	    "&"))
     (t
      (error "invalid type for c-type-name ~w, ~a" type (type-of type)))))
 
@@ -64,7 +70,8 @@
 (define-print-objects cpp-class cpp-namespace
   cpp-func cpp-ctor cpp-overload
   cpp-enum-type
-  cpp-ptr-type)
+  cpp-ptr-type
+  cpp-reference-type)
 
 (defmethod print-object ((type cpp-builtin-type) stream)
   (prin1 `(make-instance 'cpp-builtin-type
@@ -134,27 +141,26 @@
 (defun lookup (scope name)
   (when (null scope)
     (error (format nil "unknown type ~a" name)))
-  (cond
-    ((and (listp name)
-	  (eq (first name) '*))
-     (make-instance 'cpp-ptr-type
-		    :type (lookup scope (second name))))
-    ((and (listp name)
-	  (eq (first name) 'const))
-     (make-instance 'cpp-const-type
-		    :type (lookup scope (second name))))
-    
-    ;; else normal case
-    (t
-     (aif (if (listp name)
-	      (lookup-nested scope name)
-	      ;; else not a list
-	      (gethash name 
-		       (scope-inner-scopes scope)))
-	  ;; then
-	  it
-	  ;; else
-	  (lookup (parent-scope scope) name)))))
+  (aif (if (listp name)
+	   (case (first name)
+	     (*
+	      (make-instance 'cpp-ptr-type
+			     :type (lookup scope (second name))))
+	     (const
+	      (make-instance 'cpp-const-type
+			     :type (lookup scope (second name))))
+	     (& 
+	      (make-instance 'cpp-reference-type
+			     :type (lookup scope (second name))))
+	     (t
+	      (lookup-nested scope name)))
+	   ;; else not a list
+	   (gethash name 
+		    (scope-inner-scopes scope)))
+       it
+       ;; else
+       (lookup (parent-scope scope) name)))
+
 
 (defun build-scopes (body
 		     class-symbol-func
