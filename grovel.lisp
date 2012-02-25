@@ -332,3 +332,29 @@
 	(compile-shim cc-file link-libraries))
       (coerce lisp-result 'list))))
 
+(defun drain-release-pool ()
+  (while (< 0 (length *auto-release-pool*))
+    (destructuring-bind (ptr destructor) (vector-pop *auto-release-pool*)
+      (funcall destructor ptr))))
+
+(defmacro with-release-pool (&body body)
+  `(let ((*auto-release-pool* []))
+     (unwind-protect 
+	  (progn
+	    ,@body)
+       (drain-release-pool))))
+
+(defun no-auto-release (ptr)
+  (if (find ptr *auto-release-pool* :key #'first)
+      (setf *auto-release-pool* (remove ptr *auto-release-pool*))
+      ;; else
+      (error "pointer not in pool ~w" ptr))
+  ptr)
+
+(defun auto-release (ptr destructor)
+  (if (find ptr *auto-release-pool* :key #'first)
+      (error "pointer already in pool ~w" ptr)
+      ;; else
+      (vector-push-extend (list ptr destructor) 
+			  *auto-release-pool*))
+  ptr)

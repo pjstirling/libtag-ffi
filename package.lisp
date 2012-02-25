@@ -4,3 +4,5 @@
 	   #:read-file-audioproperties))
 
 (in-package #:libtag-ffi)
+
+(defvar *auto-release-pool* nil)

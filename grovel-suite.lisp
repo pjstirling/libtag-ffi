@@ -1,13 +1,5 @@
 (in-package #:libtag-ffi)
 
-#+nil
-(defmacro namespace (name &body body)
-  (declare (ignore name body)))
-
-#+nil
-(defmacro func (name return-type &rest args)
-  (declare (ignore name return-type args)))
-
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun taglib-ns-func (arg)
     (ecase arg

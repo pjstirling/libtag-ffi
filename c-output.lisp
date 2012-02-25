@@ -39,8 +39,7 @@
 		    (if (atomic-type-p (first arg))
 			name
 			;; else
-			(sconc "*" name)))
-		  )
+			(sconc "*" name))))
 		args)))
 
 (defun typecast-name (derived base)
@@ -65,6 +64,54 @@
 		 (length (length children)))
 	    (< 0 length)))))))
 
+(defun object-type-p (type)
+  (or (typep type 'cpp-class)
+      (and (typep type 'cpp-const-type)
+	   (object-type-p (cpp-wrapped-type type)))))
+
+(defun object-ptr-type-p (type)
+  (and (typep type 'cpp-ptr-type)
+       (object-type-p (cpp-wrapped-type type))))
+
+(defun make-complicated-lisp-for-arg (func-sym arg)
+  (let* ((type (first arg))
+	 (base (cpp-wrapped-type type))
+	 (child-classes (find-all-child-classes base))
+	 (name (first (second arg))))
+    `(typecase ,name
+       ((alien (* (struct ,(intern (lisp-type-name base)))))
+	,name)
+       ,@(map 'list 
+	  (lambda (child)
+	    `((alien (* ,(intern (lisp-type-name child))))
+	      (,(typecast-name child base) ,name)))
+	  child-classes)
+       (t
+	(error ,(sconc "invalid type for " 
+		       func-sym
+		       " ~w, ~a")
+	       ,name (type-of ,name))))))
+
+(defun make-complicated-lisp-for-func (sym func-sym args destructor)
+  (let* ((func-name (symbol-name func-sym))
+	 (invocation `(,sym ,@(mapcar (lambda (arg)
+					(if (arg-needs-downcast arg)
+					    (make-complicated-lisp-for-arg func-name arg)
+					    ;; else
+					    (let ((name (first (second arg))))
+					      name)))
+				      args)))
+	 (invocation (if destructor
+			 `(auto-release ,invocation
+					#',destructor)
+			 ;; else 
+			 invocation)))
+    `(defun ,func-sym (,@(mapcar (lambda (arg)
+				   (first (second arg)))
+			  args))
+       ,invocation)))
+
+
 (defun output-lisp-for-func (func lisp-result)
   (let* ((func-sym (intern (lisp-type-name func)))
 	 (sym (get func-sym 'wrapped-name (gensym)))
@@ -73,9 +120,14 @@
 			   (declare (ignore default))
 			   `(,(make-atomic type) ,name)))
 		       (cpp-func-args func)))
-	 (return-type (type-to-alien-type (make-atomic (cpp-func-return-type func)))))
+	 (return-type (cpp-func-return-type func))
+	 (destructor (when (typep return-type 'cpp-class)
+		       (symb  (lisp-type-name return-type)
+			      "-delete")))
+	 (return-type (type-to-alien-type (make-atomic return-type))))
     (setf (get func-sym 'wrapped-name) sym)
-    (if (some #'arg-needs-downcast args)
+    (if (or (some #'arg-needs-downcast args)
+	    destructor)
 	(progn
 	  (vector-push-extend `(declaim (inline ,sym))
 			      lisp-result)
@@ -83,31 +135,7 @@
 				   ,return-type
 				 ,@(args-to-alien-args args))
 			      lisp-result)
-	  (vector-push-extend `(defun ,func-sym (,@(mapcar (lambda (arg)
-							     (first (second arg)))
-						    args))
-				 (,sym ,@(mapcar (lambda (arg)
-						   (let ((type (first arg))
-							 (name (first (second arg))))
-						     (if (arg-needs-downcast arg)
-							 (let* ((base (cpp-wrapped-type type))
-								(child-classes (find-all-child-classes base)))
-							   `(typecase ,name
-							      ((alien (* (struct ,(intern (lisp-type-name base)))))
-							       ,name)
-							      ,@(map 'list 
-								     (lambda (child)
-								       `((alien (* ,(intern (lisp-type-name child))))
-									 (,(typecast-name child base) ,name)))
-								     child-classes)
-							      (t
-							       (error ,(sconc "invalid type for " 
-									      (symbol-name* func-sym)
-									      " ~w, ~a")
-								      ,name (type-of ,name)))))
-							 ;; else
-							 name)))
-						 args)))
+	  (vector-push-extend (make-complicated-lisp-for-func sym func-sym args destructor)
 			      lisp-result))
 	;; else simple case
 	(vector-push-extend `(sb-alien:define-alien-routine (,(c-transliterated-name func) ,func-sym)
@@ -121,8 +149,7 @@
   (let ((class (parent-scope ctor)))
     (output-lisp-for-func (make-instance 'cpp-func
 					 :args (cpp-ctor-args ctor)
-					 :return-type (make-instance 'cpp-ptr-type
-								     :type class)
+					 :return-type class
 					 :parent-scope class
 					 :c-name (cpp-named-c-name ctor)
 					 :name (cpp-named-name ctor))
